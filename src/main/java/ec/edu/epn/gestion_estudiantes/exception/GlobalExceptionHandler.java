@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -46,23 +47,51 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ErrorResponse> handleIllegalArgument(IllegalArgumentException ex) {
-        log.warn("Argumento inv\u00e1lido: {}", ex.getMessage());
+        log.warn("Validaci\u00f3n de negocio fallida: {}", ex.getMessage());
         return ResponseEntity
                 .status(HttpStatus.BAD_REQUEST)
                 .body(new ErrorResponse(400, ex.getMessage()));
     }
 
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleJsonParseError(HttpMessageNotReadableException ex) {
+        StringBuilder detalle = new StringBuilder("El cuerpo de la solicitud no es un JSON v\u00e1lido o contiene tipos incorrectos");
+        if (ex.getCause() != null) {
+            detalle.append(" | Causa: ").append(ex.getCause().getMessage());
+            detalle.append(" (").append(ex.getCause().getClass().getSimpleName()).append(")");
+        }
+        log.error("Error de parseo JSON: {}", detalle);
+        if (ex.getCause() != null) {
+            log.error("Stack trace causa:", ex.getCause());
+        }
+        String msg = "El cuerpo de la solicitud no es un JSON v\u00e1lido o contiene tipos incorrectos";
+        ErrorResponse error = new ErrorResponse(400, msg);
+        if (isDevelopment()) {
+            error.setDetails(detalle.toString());
+        }
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex) {
         Map<String, String> fieldErrors = new HashMap<>();
-        ex.getBindingResult().getFieldErrors().forEach(error ->
-                fieldErrors.put(error.getField(), error.getDefaultMessage())
-        );
+        StringBuilder detalle = new StringBuilder("Errores de validaci\u00f3n: ");
+
+        ex.getBindingResult().getFieldErrors().forEach(error -> {
+            fieldErrors.put(error.getField(), error.getDefaultMessage());
+            detalle.append("\n  - ").append(error.getField())
+                   .append(": ").append(error.getDefaultMessage())
+                   .append(" (valor recibido: '").append(error.getRejectedValue()).append("')");
+        });
+
         String firstError = fieldErrors.values().stream().findFirst().orElse("Error de validaci\u00f3n");
-        log.warn("Validaci\u00f3n fallida: {} - errores: {}", firstError, fieldErrors);
-        return ResponseEntity
-                .status(HttpStatus.BAD_REQUEST)
-                .body(new ErrorResponse(400, firstError, fieldErrors));
+        log.warn("Validaci\u00f3n fallida: {}{}", firstError, detalle);
+
+        ErrorResponse error = new ErrorResponse(400, firstError, fieldErrors);
+        if (isDevelopment()) {
+            error.setDetails(detalle.toString());
+        }
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
     }
 
     @ExceptionHandler(Exception.class)
